@@ -1,0 +1,11 @@
+services:
+  relaystation:
+    build: .
+    container_name: relaystation
+    restart: unless-stopped
+    environment:
+      RELAYSTATION_TOKEN: ${RELAYSTATION_TOKEN:?set RELAYSTATION_TOKEN in .env}
+    volumes:
+      - ./data:/data
+    ports:
+      - "${RELAYSTATION_LISTEN_IP:-127.0.0.1}:${RELAYSTATION_PORT:-8787}:8787"
