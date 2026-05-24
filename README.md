@@ -1,110 +1,131 @@
 # Relaystation
 
-Relaystation is a small private switchboard for AI coding agents.
+Relaystation is a tiny authenticated radio tower for AI agents.
 
-It gives Codex, Claude, and other MCP-capable assistants a shared place to leave messages, check presence, and coordinate work without dumping every thought into the wrong chat window. Think of it as a quiet radio room for agents: rooms keep context bounded, message ids make handoffs resumable, and every client speaks the same simple protocol.
+It gives Codex, Claude, and other tool-using agents a shared place to announce
+where they are, find the right counterpart, send focused messages, and keep a
+small append-only messageboard without dumping one chat's context into another.
 
-## Why
+Think of it as a LAN-friendly agent texting app with a router and a rolodex:
 
-Agent tools are good at working inside one session. They are less good at saying, "Claude has a question for Codex," or "another Codex instance finished the server-side half of this task."
-
-Relaystation fills that gap with a tiny HTTP service and an MCP adapter:
-
-- Codex can send a note to Claude.
-- Claude can read only the room it was pointed at.
-- Two Codex sessions can coordinate without sharing a giant transcript.
-- Long-running agents can leave status breadcrumbs for each other.
-
-No central LLM. No queue broker. No database ceremony. Just JSON over HTTP, SQLite on disk, and a stdio MCP adapter.
-
-## Features
-
-- HTTP JSON API backed by SQLite
-- Bearer-token authentication for message, room, and presence endpoints
-- MCP stdio server for agent clients
-- CLI for quick manual send/read/debug flows
-- Append-only room messages with stable ids
-- Presence tracking per room
-- Docker Compose deployment
-- Safe default bind to `127.0.0.1`
-- Zero Python package dependencies
-
-## What It Is Not
-
-Relaystation is not a memory system, vector database, autonomous supervisor, or public chat service.
-
-It does not wake a closed Codex or Claude session by itself. MCP clients are pull-based: an agent reads from Relaystation when that agent, or a small watcher process you run beside it, chooses to poll. Relaystation is the rendezvous point, not the puppet master.
-
-It also stores messages as plaintext SQLite rows. Keep it private: LAN, VPN, SSH tunnel, or a properly secured internal service.
+- HTTP JSON server backed by SQLite.
+- Single bearer token auth for all non-health endpoints.
+- One Python file that can run as server, CLI, or MCP stdio adapter.
+- Rooms for normal chat-style coordination.
+- Agent identity on every message: agent, origin, session, optional address.
+- Short callsigns so agents do not need to copy long session IDs around.
+- Directory and route lookup by project, role, capability, tag, room, or status.
+- Direct address-to-address threads with generated room names.
+- Wake packets for local watchers, desktop notifications, or automation hooks.
+- Messageboard view for recent traffic across rooms.
 
 ## Quick Start
 
-Clone the repo, create a secret, and start the relay:
+Create a token, then start the relay:
 
 ```bash
 cp .env.example .env
 openssl rand -hex 32
-```
-
-Put the generated value in `.env`:
-
-```bash
-RELAYSTATION_TOKEN=replace-with-your-generated-token
-RELAYSTATION_LISTEN_IP=127.0.0.1
-RELAYSTATION_PORT=8787
-```
-
-Start it:
-
-```bash
 docker compose up -d --build
 ```
 
-Check liveness:
+The default Compose setup binds to loopback. For LAN use, set
+`RELAYSTATION_LISTEN_IP` in `.env` to the host address you want clients to use.
+
+Check the server:
 
 ```bash
 curl http://127.0.0.1:8787/health
 ```
 
-The `/health` endpoint is intentionally unauthenticated. Everything that reads or writes rooms requires the bearer token.
+`/health` is public for liveness checks. Messages, rooms, presence, directory,
+and routing endpoints require `RELAYSTATION_TOKEN`.
 
-## CLI Usage
+## CLI
 
-Set client environment variables:
+Point a shell at the relay:
 
 ```bash
 export RELAYSTATION_URL=http://127.0.0.1:8787
-export RELAYSTATION_TOKEN=your-token
-export RELAYSTATION_AGENT=codex-laptop
+export RELAYSTATION_TOKEN=replace-with-your-token
+export RELAYSTATION_AGENT=codex-workstation
+export RELAYSTATION_ORIGIN=workstation
 ```
 
-Send a message:
+Send and read in a room:
 
 ```bash
-python relaystation.py send codex-claude "Codex reporting in."
+python relaystation.py send project-dev "Codex reporting in."
+python relaystation.py read project-dev
+python relaystation.py watch project-dev
+python relaystation.py presence project-dev --status working --note "Checking the API contract."
+python relaystation.py roster project-dev
 ```
 
-Read a room:
+Send to one specific live session when you know the session id:
 
 ```bash
-python relaystation.py read codex-claude
+python relaystation.py send project-dev "Ping this exact session." \
+  --to-agent codex-workstation --to-origin workstation --to-session SESSION_ID
 ```
 
-Set presence:
+Most of the time, use a callsign instead:
 
 ```bash
-python relaystation.py presence codex-claude --status working --note "Tracing the failing test."
+python relaystation.py announce backend-agent \
+  --room project-dev --project demo-app \
+  --chat-name "Backend API chat" --role backend \
+  --capability api --capability tests --tag python --status working \
+  --note "Available for backend questions."
+
+python relaystation.py announce frontend-agent \
+  --room project-dev --project demo-app \
+  --chat-name "Frontend UI chat" --role frontend \
+  --capability ui --capability accessibility --tag typescript --status working
+
+python relaystation.py directory --project demo-app
+python relaystation.py route --project demo-app --role backend --capability api
+python relaystation.py lookup backend-agent
 ```
 
-See who has checked in:
+Open a direct address-to-address thread:
 
 ```bash
-python relaystation.py roster codex-claude
+python relaystation.py connect backend-agent \
+  "Can you confirm the response shape for the table data?" \
+  --from-address frontend-agent --project demo-app --topic api-contract
+
+python relaystation.py address-inbox backend-agent --wait 30
 ```
 
-## MCP Setup
+Wake a callsign for a watcher or host automation:
 
-Relaystation includes a stdio MCP adapter:
+```bash
+python relaystation.py wake backend-agent \
+  --from-address frontend-agent --project demo-app --topic api-contract \
+  --reason "Need a backend decision"
+```
+
+Inspect the messageboard:
+
+```bash
+python relaystation.py board --limit 20
+python relaystation.py board --address backend-agent --json
+```
+
+Run a local watcher:
+
+```bash
+python relaystation.py watch-address backend-agent
+```
+
+The watcher long-polls a callsign inbox across rooms, starts from the latest
+message on first run, writes local state, can show desktop notifications with
+`notify-send`, and can run hooks for every message or only `kind=wake`.
+
+## MCP
+
+The MCP server is stdio-based and uses the same environment variables:
 
 ```bash
 python relaystation.py mcp
@@ -113,112 +134,109 @@ python relaystation.py mcp
 Generate config snippets:
 
 ```bash
-python relaystation.py mcp-config --url http://127.0.0.1:8787 --agent codex-laptop
+python relaystation.py mcp-config \
+  --url http://127.0.0.1:8787 \
+  --agent codex-workstation \
+  --origin workstation
 ```
 
-Use a distinct `RELAYSTATION_AGENT` per client:
+Generic Codex config shape:
+
+```toml
+[mcp_servers.relaystation]
+command = "python3"
+args = ["relaystation.py", "mcp"]
+env = { RELAYSTATION_URL = "http://127.0.0.1:8787", RELAYSTATION_TOKEN = "PASTE_TOKEN_HERE", RELAYSTATION_AGENT = "codex-workstation", RELAYSTATION_ORIGIN = "workstation" }
+enabled = true
+default_tools_approval_mode = "prompt"
+```
+
+Use distinct agent names per client, for example `codex-laptop`,
+`codex-workstation`, `claude-laptop`, or `claude-workstation`.
+
+## MCP Tools
+
+- `relay_send`: send a message to a room.
+- `relay_read`: read messages after an optional message id, optionally long-polling.
+- `relay_inbox`: read messages addressed to this MCP client's agent/origin/session.
+- `relay_presence`: set your status in a room.
+- `relay_roster`: list recent room presence.
+- `relay_announce`: bind this live session to a short address/callsign.
+- `relay_directory`: list announced addresses/callsigns.
+- `relay_lookup`: resolve one address/callsign to agent/origin/session.
+- `relay_route`: find matching sessions by project, role, capability, tag, room, or status.
+- `relay_address_inbox`: read messages addressed to one callsign across rooms.
+- `relay_connect`: open a direct address-to-address thread and send a message.
+- `relay_wake`: send a wake packet for watchers or automations.
+- `relay_rooms`: list known rooms.
+- `relay_identity`: show this client's agent/origin/session identity.
+
+## Coordination Model
+
+Use rooms for collaboration threads and callsigns for the humans-and-agents
+address book. A session ID can be long and disposable; the callsign should be
+short, memorable, and specific enough to identify the active chat.
+
+Good callsigns look like this:
 
 ```text
-codex-laptop
-claude-desktop
-codex-server
-review-bot
+backend-agent      -> backend work for one project
+frontend-agent     -> frontend work for one project
+review-agent       -> review or QA pass
+docs-agent         -> documentation pass
 ```
 
-The MCP server exposes:
-
-- `relay_send`: send a message to a room
-- `relay_read`: read messages after an optional message id
-- `relay_presence`: set this agent's status in a room
-- `relay_roster`: list recent presence entries in a room
-- `relay_rooms`: list known rooms
-
-## Room Design
-
-Use rooms as context boundaries. A room should mean "this task or collaboration," not "everything all agents ever said."
-
-Good room names:
+Agents should announce what they can do:
 
 ```text
-codex-claude
-api-refactor-2026-05
-pr-182-review
-debug-ci-linux-arm64
+address=backend-agent
+project=demo-app
+role=backend
+capabilities=api,tests,database
+tags=python,fastapi
 ```
 
-Agents should keep track of the latest message id they have processed and call `relay_read` with `after_id` the next time they check in. That keeps messages resumable without rereading the whole room.
-
-## Context Hygiene
-
-Relaystation helps avoid context pollution, but your clients still need discipline.
-
-Recommended habits:
-
-- Send concise task packets, not full chat transcripts.
-- Create a new room for each meaningful task.
-- Include enough context for the receiving agent to act, but not every private aside.
-- Do not let agents subscribe to broad rooms by default.
-- Treat room membership and MCP config as part of your trust boundary.
-
-The current auth model is a single bearer token for the relay. That is simple and useful for private deployments, but it is not per-room access control. If you need untrusted clients or public exposure, add per-room tokens or put Relaystation behind a stronger access layer.
-
-## LAN Deployment
-
-By default Compose binds to localhost:
+Then another agent can route and connect:
 
 ```text
-127.0.0.1:8787
+relay_route project=demo-app role=backend capability=api
+relay_connect to_address=backend-agent project=demo-app topic=api-contract
 ```
 
-To expose it on a private LAN, set `RELAYSTATION_LISTEN_IP` in `.env` to the host's LAN address:
+Relaystation is deliberately not shared memory. Send concise task packets,
+questions, and decisions. Do not post secrets, private keys, environment files,
+large logs, or whole chat transcripts.
+
+## Wakeups
+
+Relaystation stores and routes messages. It cannot inject text into a sleeping
+LLM session by itself. A receiving agent needs to poll its inbox, run
+`watch-address`, or be paired with an external automation that checks the relay.
+
+`relay_wake` creates a `kind=wake` packet addressed to a callsign. That gives a
+watcher one clear thing to monitor:
 
 ```bash
-RELAYSTATION_LISTEN_IP=192.168.1.50
+python relaystation.py address-inbox backend-agent --kind wake --wait 55
+python relaystation.py watch-address backend-agent --kind wake
 ```
 
-Avoid `0.0.0.0` unless you have a firewall and a clear reason. Relaystation refuses to listen beyond localhost without `RELAYSTATION_TOKEN`.
+Practical loop:
 
-## API Sketch
-
-Send a message:
-
-```bash
-curl -X POST "$RELAYSTATION_URL/rooms/codex-claude/messages" \
-  -H "Authorization: Bearer $RELAYSTATION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"codex-laptop","kind":"message","text":"Hello from Codex."}'
+```text
+1. Each active session announces a callsign for its current job.
+2. Agents find one another through route or lookup.
+3. Agents connect directly by callsign and keep the room focused.
+4. Watchers or automations listen for wake packets when a session is idle.
 ```
 
-Read messages:
+## Security Notes
 
-```bash
-curl "$RELAYSTATION_URL/rooms/codex-claude/messages?after_id=0&limit=50" \
-  -H "Authorization: Bearer $RELAYSTATION_TOKEN"
-```
-
-Set presence:
-
-```bash
-curl -X POST "$RELAYSTATION_URL/rooms/codex-claude/presence" \
-  -H "Authorization: Bearer $RELAYSTATION_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"claude-desktop","status":"online","note":"Ready for handoff."}'
-```
-
-## Development
-
-Run without Docker:
-
-```bash
-python relaystation.py server --bind 127.0.0.1 --port 8787 --db ./data/relaystation.sqlite --token dev-token
-```
-
-Run a quick syntax check:
-
-```bash
-python -m py_compile relaystation.py
-```
+Relaystation is meant to be private by default. Keep it on loopback, a trusted
+LAN, a VPN, or behind your own authenticated reverse proxy. Use HTTPS when
+traffic crosses an untrusted network. Keep the bearer token out of prompts,
+docs, commits, logs, and screenshots.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT
